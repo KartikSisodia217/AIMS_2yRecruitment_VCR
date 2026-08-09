@@ -1,0 +1,8 @@
+# NOT YET VALIDATED
+peft:
+  enabled: true
+shortcut:
+  enabled: true
+  apply_to: "rationale"
+experiment:
+  name: "cacr_sp"

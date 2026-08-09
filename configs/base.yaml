@@ -1,0 +1,66 @@
+data:
+  vcr_dir: null
+  split: "train"
+  max_samples: null
+  num_workers: 4
+  debug_samples: 5
+  reference_format: "person N"
+
+model:
+  vlm_name: "Qwen/Qwen2.5-VL-3B-Instruct"
+  dtype: "float32"
+  device: "cpu"
+  max_pixels: 602112
+  min_pixels: 200704
+  attn_implementation: "sdpa"
+  use_mock: true
+
+peft:
+  enabled: false
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+
+projection:
+  embedding_dim: 512
+  intermediate_dim: 1024
+  activation: "gelu"
+  dropout: 0.1
+  normalize: true
+
+contrastive:
+  loss_type: "infonce"
+  temperature: 0.07
+  use_batch_negatives: false
+
+shortcut:
+  enabled: false
+  lambda_sp: 0.1
+  apply_to: "rationale"
+  margin: 0.0
+
+training:
+  epochs: 10
+  batch_size: 1
+  lr: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  grad_accum: 8
+  max_grad_norm: 1.0
+  use_gt_answer_for_rationale: true
+
+evaluation:
+  batch_size: 1
+  metrics:
+    - "accuracy"
+
+experiment:
+  name: "baseline"
+  output_dir: "./outputs"
+  seed: 42
+  log_interval: 10
+  eval_interval: 500
+  save_interval: 1000

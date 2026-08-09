@@ -1,0 +1,6 @@
+model:
+  use_mock: false
+shortcut:
+  enabled: false
+experiment:
+  name: "baseline_vlm"
