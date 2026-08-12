@@ -166,6 +166,7 @@ outputs/
 checkpoints/
 data/vcr1/
 data/vcr1images/
+data/vcr/
 *.pth
 *.pt
 wandb/
