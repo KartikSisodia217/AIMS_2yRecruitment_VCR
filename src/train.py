@@ -109,6 +109,7 @@ def main():
     parser.add_argument("--max_train_samples", type=int, default=-1, help="Subset for tiny overfit test")
     parser.add_argument("--max_val_samples", type=int, default=-1, help="Subset for validation")
     parser.add_argument("--log_interval", type=int, default=10, help="Log every N batches")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     
     args = parser.parse_args()
     
@@ -166,9 +167,31 @@ def main():
     
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     
+    start_epoch = 1
     best_val_acc = -1.0
     
-    for epoch in range(1, args.epochs + 1):
+    if args.resume:
+        print(f"Loading checkpoint from {args.resume}...")
+        checkpoint = torch.load(args.resume, map_location=device)
+        
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.answer_scorer.load_state_dict(checkpoint["answer_scorer"])
+            model.rationale_scorer.load_state_dict(checkpoint["rationale_scorer"])
+            
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = checkpoint["epoch"] + 1
+        
+        if "best_val_acc" in checkpoint:
+            best_val_acc = checkpoint["best_val_acc"]
+        elif "val_metrics" in checkpoint and "acc_ar" in checkpoint["val_metrics"]:
+            best_val_acc = checkpoint["val_metrics"]["acc_ar"]
+            
+        print(f"Resuming from epoch {start_epoch}")
+        print(f"Best Val Q->AR so far: {best_val_acc:.4f}")
+        
+    for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
         
         train_metrics = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
@@ -201,6 +224,17 @@ def main():
             }
             torch.save(state_dict, save_path)
             print(f"Saved best model with Val Q->AR: {best_val_acc:.4f} to {save_path}")
+
+        latest_save_path = os.path.join(args.checkpoint_dir, "latest_checkpoint.pt")
+        latest_state_dict = {
+            "model_state_dict": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": epoch,
+            "best_val_acc": best_val_acc,
+            "val_metrics": val_metrics
+        }
+        torch.save(latest_state_dict, latest_save_path)
+        print(f"Saved latest checkpoint: {latest_save_path}")
 
 if __name__ == "__main__":
     main()
