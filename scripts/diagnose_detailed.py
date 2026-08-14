@@ -16,22 +16,25 @@ from src.utils import set_seed, vcr_collate_fn, load_image
 def diagnose_detailed(model, dataloader, device, zip_path):
     model.eval()
     
+    # Text and Final Context diffs (pred vs gt)
     text_cos_sims = []
-    text_mag_diffs = []
     text_l2_dists = []
     
     ctx_cos_sims = []
-    ctx_mag_diffs = []
     ctx_l2_dists = []
     
     # Image dominance metrics
     ctx_diff_no_image = []
-    ctx_diff_no_text = []
-    ctx_diff_ans_change = []
+    ctx_diff_no_interaction = []
     
-    # Answer swap sensitivity
-    ans_swap_ctx_cos_avg = []
+    # Answer-swap pairwise metrics
+    ans_swap_raw_text_cos_avg = []
+    ans_swap_int_proj_cos_avg = []
+    ans_swap_txt_res_cos_avg = []
+    ans_swap_final_ctx_cos_avg = []
     ans_swap_score_diff_avg = []
+    ans_swap_variance_avg = []
+    
     changed_preds_ans_swap = 0
     total_ans_swaps = 0
     
@@ -60,18 +63,34 @@ def diagnose_detailed(model, dataloader, device, zip_path):
         result_pred = model.forward_rationale(images, questions, pred_answers, rationale_choices, image_embs=image_embs)
         
         for i in range(len(ans_labels)):
+            img = image_embs[i:i+1] # (1, 768)
+            t_tf = result_tf["context_text_embs"][i:i+1] # (1, 768)
+            
+            # Modality Ablations (Clean isolation)
+            # Full context
+            ctx_base = model.compute_context(img, t_tf)
+            
+            # No Image -> isolating text residual normalized
+            txt_res_unnorm = model.text_residual_projection(t_tf)
+            ctx_no_img = F.normalize(txt_res_unnorm, p=2, dim=-1)
+            
+            # No text residual -> isolating interaction normalized
+            concat_features = torch.cat([img, t_tf, img * t_tf], dim=-1)
+            int_proj_unnorm = model.context_projection(concat_features)
+            ctx_no_interaction = F.normalize(int_proj_unnorm, p=2, dim=-1)
+            
+            ctx_diff_no_image.append(torch.norm(ctx_base - ctx_no_img, p=2).item())
+            ctx_diff_no_interaction.append(torch.norm(ctx_base - ctx_no_interaction, p=2).item())
+            
             if gt_answers[i] != pred_answers[i]:
                 # 1. TEXT EMBEDDING DIFFERENCE
-                t_tf = result_tf["context_text_embs"][i] # (768)
-                t_pred = result_pred["context_text_embs"][i] # (768)
+                t_tf_s = result_tf["context_text_embs"][i] # (768)
+                t_pred_s = result_pred["context_text_embs"][i] # (768)
                 
-                text_cos = F.cosine_similarity(t_tf.unsqueeze(0), t_pred.unsqueeze(0)).item()
-                text_l2 = torch.norm(t_tf - t_pred, p=2).item()
-                text_mag = torch.mean(torch.abs(t_tf - t_pred)).item()
-                
+                text_cos = F.cosine_similarity(t_tf_s.unsqueeze(0), t_pred_s.unsqueeze(0)).item()
+                text_l2 = torch.norm(t_tf_s - t_pred_s, p=2).item()
                 text_cos_sims.append(text_cos)
                 text_l2_dists.append(text_l2)
-                text_mag_diffs.append(text_mag)
                 
                 # 2. CONTEXT PROJECTION DIFFERENCE
                 c_tf = result_tf["context_emb"][i] # (512)
@@ -79,105 +98,117 @@ def diagnose_detailed(model, dataloader, device, zip_path):
                 
                 ctx_cos = F.cosine_similarity(c_tf.unsqueeze(0), c_pred.unsqueeze(0)).item()
                 ctx_l2 = torch.norm(c_tf - c_pred, p=2).item()
-                ctx_mag = torch.mean(torch.abs(c_tf - c_pred)).item()
                 
                 ctx_cos_sims.append(ctx_cos)
                 ctx_l2_dists.append(ctx_l2)
-                ctx_mag_diffs.append(ctx_mag)
                 
-                ctx_diff_ans_change.append(ctx_l2)
+            # ANSWER-SWAP SENSITIVITY (for all, max 100 samples to keep it fast)
+            if len(ans_swap_final_ctx_cos_avg) < 100:
+                q = questions[i]
+                a_choices = answer_choices[i]
                 
-                # 4. IMAGE DOMINANCE
-                # Calculate for GT answer
-                # h_context = torch.cat([image_embs, ctx_text_embs, image_embs * ctx_text_embs], dim=-1)
-                img = image_embs[i:i+1] # (1, 768)
-                txt = t_tf.unsqueeze(0) # (1, 768)
-                zero_img = torch.zeros_like(img)
-                zero_txt = torch.zeros_like(txt)
+                r_texts = [f"Rationale: {r}" for r in rationale_choices[i]]
+                r_embs = model.vlm.encode_text(r_texts)
+                r_proj = F.normalize(model.rationale_projection(r_embs), p=2, dim=-1)
                 
-                h_base = torch.cat([img, txt, img * txt], dim=-1)
-                ctx_base = model.context_projection(h_base)
+                all_raw_text = []
+                all_int_proj = []
+                all_txt_res = []
+                all_final_ctx = []
+                all_scores = []
                 
-                h_no_img = torch.cat([zero_img, txt, zero_img * txt], dim=-1)
-                ctx_no_img = model.context_projection(h_no_img)
-                
-                h_no_txt = torch.cat([img, zero_txt, img * zero_txt], dim=-1)
-                ctx_no_txt = model.context_projection(h_no_txt)
-                
-                ctx_diff_no_image.append(torch.norm(ctx_base - ctx_no_img, p=2).item())
-                ctx_diff_no_text.append(torch.norm(ctx_base - ctx_no_txt, p=2).item())
-                
-                # 5. ANSWER-SWAP SENSITIVITY
-                if len(ans_swap_ctx_cos_avg) < 100: # limit subset to 100
-                    q = questions[i]
-                    a_choices = answer_choices[i]
+                for a in a_choices:
+                    a_txt = f"Question: {q} Answer: {a}"
+                    a_emb = model.vlm.encode_text([a_txt]) # (1, 768)
                     
-                    r_texts = [f"Rationale: {r}" for r in rationale_choices[i]]
-                    r_embs = model.vlm.encode_text(r_texts)
-                    r_proj = model.rationale_projection(r_embs)
+                    # Store raw text
+                    all_raw_text.append(a_emb)
                     
-                    all_ctx_embs = []
-                    all_scores = []
-                    for a in a_choices:
-                        a_txt = f"Question: {q} Answer: {a}"
-                        a_emb = model.vlm.encode_text([a_txt])
-                        h = torch.cat([img, a_emb, img * a_emb], dim=-1)
-                        c = model.context_projection(h)
-                        all_ctx_embs.append(c)
-                        sc = (r_proj * c).sum(-1)
-                        all_scores.append(sc)
-                        
-                    # Compare pairs
-                    pair_cos = []
-                    pair_sc_diff = []
+                    # Store interaction proj
+                    concat_feat = torch.cat([img, a_emb, img * a_emb], dim=-1)
+                    int_p = model.context_projection(concat_feat)
+                    all_int_proj.append(int_p)
+                    
+                    # Store text residual
+                    txt_p = model.text_residual_projection(a_emb)
+                    all_txt_res.append(txt_p)
+                    
+                    # Store final context
+                    c = model.compute_context(img, a_emb)
+                    all_final_ctx.append(c)
+                    
+                    # Score
+                    sc = (r_proj * c).sum(-1)
+                    all_scores.append(sc)
+                    
+                # Pairwise similarities
+                def avg_pairwise_cos(embs):
+                    cos_list = []
                     for x in range(4):
                         for y in range(x+1, 4):
-                            pair_cos.append(F.cosine_similarity(all_ctx_embs[x], all_ctx_embs[y]).item())
-                            pair_sc_diff.append(torch.mean(torch.abs(all_scores[x] - all_scores[y])).item())
-                            
-                    ans_swap_ctx_cos_avg.append(np.mean(pair_cos))
-                    ans_swap_score_diff_avg.append(np.mean(pair_sc_diff))
+                            cos_list.append(F.cosine_similarity(embs[x], embs[y]).item())
+                    return np.mean(cos_list)
                     
-                    # Count changed rationale predictions across all 4 answers
-                    preds = [s.argmax().item() for s in all_scores]
-                    if len(set(preds)) > 1:
-                        changed_preds_ans_swap += 1
-                    total_ans_swaps += 1
+                ans_swap_raw_text_cos_avg.append(avg_pairwise_cos(all_raw_text))
+                ans_swap_int_proj_cos_avg.append(avg_pairwise_cos(all_int_proj))
+                ans_swap_txt_res_cos_avg.append(avg_pairwise_cos(all_txt_res))
+                ans_swap_final_ctx_cos_avg.append(avg_pairwise_cos(all_final_ctx))
+                
+                # Pairwise score difference
+                pair_sc_diff = []
+                for x in range(4):
+                    for y in range(x+1, 4):
+                        pair_sc_diff.append(torch.mean(torch.abs(all_scores[x] - all_scores[y])).item())
+                ans_swap_score_diff_avg.append(np.mean(pair_sc_diff))
+                
+                # Answer variance measure: mean_i ||C_i - mean(C)||²
+                ctx_stack = torch.cat(all_final_ctx, dim=0) # (4, 512)
+                ctx_mean = ctx_stack.mean(dim=0, keepdim=True) # (1, 512)
+                var = torch.norm(ctx_stack - ctx_mean, p=2, dim=-1).pow(2).mean().item()
+                ans_swap_variance_avg.append(var)
+                
+                # Count changed rationale predictions across all 4 answers
+                preds = [s.argmax().item() for s in all_scores]
+                if len(set(preds)) > 1:
+                    changed_preds_ans_swap += 1
+                total_ans_swaps += 1
 
     print("=== DIAGNOSTIC REPORT DETAILED ===")
-    print(f"Total diff samples evaluated: {len(text_cos_sims)}")
     
     def report_stats(name, arr):
         print(f"{name}:")
+        if len(arr) == 0:
+            print("  No samples evaluated.")
+            return
         print(f"  Mean:   {np.mean(arr):.6f}")
         print(f"  Median: {np.median(arr):.6f}")
         print(f"  Std:    {np.std(arr):.6f}")
         print(f"  Min:    {np.min(arr):.6f}")
         print(f"  Max:    {np.max(arr):.6f}")
         
+    print(f"\nTotal diff samples evaluated (pred != gt): {len(text_cos_sims)}")
     print("\n1. TEXT EMBEDDING DIFFERENCE (RAW VLM)")
     report_stats("Cosine Sim", text_cos_sims)
-    report_stats("Mean Abs Diff", text_mag_diffs)
     report_stats("L2 Dist", text_l2_dists)
     
     print("\n2. CONTEXT PROJECTION DIFFERENCE (FINAL)")
     report_stats("Cosine Sim", ctx_cos_sims)
-    report_stats("Mean Abs Diff", ctx_mag_diffs)
     report_stats("L2 Dist", ctx_l2_dists)
     
-    print("\n3. INFORMATION RETENTION")
-    print(f"Avg L2 Change (Text): {np.mean(text_l2_dists):.6f} -> (Final Ctx): {np.mean(ctx_l2_dists):.6f}")
-    print(f"Avg Cos Sim (Text): {np.mean(text_cos_sims):.6f} -> (Final Ctx): {np.mean(ctx_cos_sims):.6f}")
+    print("\n3. IMAGE DOMINANCE (L2 distances from base context)")
+    print(f"Avg diff when Image removed (Text Residual only): {np.mean(ctx_diff_no_image):.6f}")
+    print(f"Avg diff when Text Residual removed (Interaction only): {np.mean(ctx_diff_no_interaction):.6f}")
     
-    print("\n4. IMAGE DOMINANCE (L2 distances from base context)")
-    print(f"Avg diff when Answer Text changes (GT->Pred): {np.mean(ctx_diff_ans_change):.6f}")
-    print(f"Avg diff when Image removed: {np.mean(ctx_diff_no_image):.6f}")
-    print(f"Avg diff when Text removed: {np.mean(ctx_diff_no_text):.6f}")
+    print("\n4. ANSWER-SWAP SENSITIVITY (Subset size: 100)")
+    print("Pairwise Cosine Similarities (Lower means more answer variance):")
+    print(f"  A. Raw text representation:       {np.mean(ans_swap_raw_text_cos_avg):.6f}")
+    print(f"  B. Original interaction proj:     {np.mean(ans_swap_int_proj_cos_avg):.6f}")
+    print(f"  C. Text residual proj:            {np.mean(ans_swap_txt_res_cos_avg):.6f}")
+    print(f"  D. Final Context:                 {np.mean(ans_swap_final_ctx_cos_avg):.6f}")
     
-    print("\n5. ANSWER-SWAP SENSITIVITY (Subset size: 100)")
-    print(f"Avg pairwise context cosine sim: {np.mean(ans_swap_ctx_cos_avg):.6f}")
-    print(f"Avg pairwise score diff: {np.mean(ans_swap_score_diff_avg):.6f}")
-    print(f"Cases where answer swap changed selected rationale: {changed_preds_ans_swap} / {total_ans_swaps}")
+    print(f"\n  E. Answer Variance (mean ||C_i - mean(C)||²): {np.mean(ans_swap_variance_avg):.6f}")
+    print(f"  Avg pairwise score diff: {np.mean(ans_swap_score_diff_avg):.6f}")
+    print(f"  Cases where answer swap changed selected rationale: {changed_preds_ans_swap} / {total_ans_swaps}")
 
 def main():
     import argparse

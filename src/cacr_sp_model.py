@@ -3,20 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.model import BaselineScorer
 
-class ProjectionHead(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, out_dim)
-        )
-        
-    def forward(self, x):
-        x = self.mlp(x)
-        # L2 norm
-        return x / x.norm(p=2, dim=-1, keepdim=True)
-
 class CACRSPVCRModel(nn.Module):
     def __init__(self, vlm, scorer_dropout=0.1, embedding_dim=512, temperature=0.07):
         super().__init__()
@@ -27,9 +13,10 @@ class CACRSPVCRModel(nn.Module):
             
         self.answer_scorer = BaselineScorer(dropout=scorer_dropout)
         
-        self.context_projection = ProjectionHead(2304, 1024, embedding_dim)
-        self.rationale_projection = ProjectionHead(768, 1024, embedding_dim)
-        self.blind_projection = ProjectionHead(768, 1024, embedding_dim)
+        self.context_projection = nn.Linear(2304, embedding_dim)
+        self.text_residual_projection = nn.Linear(768, embedding_dim)
+        self.rationale_projection = nn.Linear(768, embedding_dim)
+        self.blind_projection = nn.Linear(768, embedding_dim)
         
         self.temperature = temperature
 
@@ -52,6 +39,21 @@ class CACRSPVCRModel(nn.Module):
         scores = self.answer_scorer(img_embs_expanded, text_embs)
         return scores.view(B, 4)
 
+    def compute_context(self, image_embs, text_embs):
+        concat_features = torch.cat(
+            [image_embs, text_embs, image_embs * text_embs],
+            dim=-1
+        )
+        interaction_proj = self.context_projection(concat_features)
+        text_residual = self.text_residual_projection(text_embs)
+
+        interaction_proj = F.normalize(interaction_proj, p=2, dim=-1)
+        text_residual = F.normalize(text_residual, p=2, dim=-1)
+
+        context = interaction_proj + text_residual
+        context = F.normalize(context, p=2, dim=-1)
+        return context
+
     def forward_rationale(self, images, questions, selected_answers, rationale_choices, image_embs=None):
         B = len(questions)
         if image_embs is None:
@@ -60,8 +62,7 @@ class CACRSPVCRModel(nn.Module):
         ctx_texts = [f"Question: {q} Answer: {selected_answers[i]}" for i, q in enumerate(questions)]
         ctx_text_embs = self.vlm.encode_text(ctx_texts)
         
-        h_context = torch.cat([image_embs, ctx_text_embs, image_embs * ctx_text_embs], dim=-1)
-        context_embedding = self.context_projection(h_context)
+        context_embedding = self.compute_context(image_embs, ctx_text_embs)
         
         rat_texts_flat = []
         for r_list in rationale_choices:
@@ -71,11 +72,13 @@ class CACRSPVCRModel(nn.Module):
         rat_text_embs = self.vlm.encode_text(rat_texts_flat)
         rationale_embeddings_flat = self.rationale_projection(rat_text_embs)
         rationale_embeddings = rationale_embeddings_flat.view(B, 4, -1)
+        rationale_embeddings = F.normalize(rationale_embeddings, p=2, dim=-1)
         
         scores = (rationale_embeddings * context_embedding.unsqueeze(1)).sum(-1)
         rationale_scores = scores
         
         blind_embedding = self.blind_projection(ctx_text_embs)
+        blind_embedding = F.normalize(blind_embedding, p=2, dim=-1)
         blind_scores_unnorm = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
         blind_scores = blind_scores_unnorm
         
@@ -89,5 +92,6 @@ class CACRSPVCRModel(nn.Module):
 
     def forward_blind(self, ctx_text_embs, rationale_embeddings):
         blind_embedding = self.blind_projection(ctx_text_embs)
+        blind_embedding = F.normalize(blind_embedding, p=2, dim=-1)
         scores = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
         return scores
