@@ -130,6 +130,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, args, epoch
 def main():
     parser = argparse.ArgumentParser(description="Train Baseline VCR Model")
     parser.add_argument("--data_dir", type=str, default="data/vcr", help="VCR data directory")
+    parser.add_argument("--image_dir", type=str, default=None, help="Root directory containing vcr1images / movie folders.")
     parser.add_argument("--zip_path", type=str, default="data/vcr/vcr1images.zip", help="Zip path for images")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -161,8 +162,8 @@ def main():
     
     # --- Datasets ---
     print("Loading datasets...")
-    train_dataset = VCRDataset(split="train", data_dir=args.data_dir)
-    val_dataset = VCRDataset(split="val", data_dir=args.data_dir)
+    train_dataset = VCRDataset(split="train", data_dir=args.data_dir, image_dir=args.image_dir)
+    val_dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
     
     if args.max_train_samples > 0:
         indices = list(range(min(args.max_train_samples, len(train_dataset))))
