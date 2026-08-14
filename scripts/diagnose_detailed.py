@@ -180,10 +180,16 @@ def diagnose_detailed(model, dataloader, device, zip_path):
     print(f"Cases where answer swap changed selected rationale: {changed_preds_ans_swap} / {total_ans_swaps}")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_dir", type=str, default="data/vcr")
+    parser.add_argument("--image_dir", type=str, default="data/vcr/vcr1images")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    dataset = VCRDataset(split="val", data_dir="data/vcr", image_dir="data/vcr/vcr1images")
+    dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
     indices = list(range(1000))
     dataset = Subset(dataset, indices)
     
@@ -200,7 +206,7 @@ def main():
         if "model_state_dict" in ckpt:
             model.load_state_dict(ckpt["model_state_dict"], strict=False)
     
-    diagnose_detailed(model, dataloader, device, "data/vcr/vcr1images.zip")
+    diagnose_detailed(model, dataloader, device, args.image_dir)
     
 if __name__ == "__main__":
     main()
