@@ -57,7 +57,7 @@ class CACRSPVCRModel(nn.Module):
         if image_embs is None:
             image_embs = self.encode_images(images)
             
-        ctx_texts = [f"{q} {selected_answers[i]}" for i, q in enumerate(questions)]
+        ctx_texts = [f"Question: {q} Answer: {selected_answers[i]}" for i, q in enumerate(questions)]
         ctx_text_embs = self.vlm.encode_text(ctx_texts)
         
         h_context = torch.cat([image_embs, ctx_text_embs, image_embs * ctx_text_embs], dim=-1)
@@ -66,18 +66,18 @@ class CACRSPVCRModel(nn.Module):
         rat_texts_flat = []
         for r_list in rationale_choices:
             for r in r_list:
-                rat_texts_flat.append(r)
+                rat_texts_flat.append(f"Rationale: {r}")
                 
         rat_text_embs = self.vlm.encode_text(rat_texts_flat)
         rationale_embeddings_flat = self.rationale_projection(rat_text_embs)
         rationale_embeddings = rationale_embeddings_flat.view(B, 4, -1)
         
         scores = (rationale_embeddings * context_embedding.unsqueeze(1)).sum(-1)
-        rationale_scores = scores / self.temperature
+        rationale_scores = scores
         
         blind_embedding = self.blind_projection(ctx_text_embs)
-        blind_scores_unnorm = (rationale_embeddings * blind_embedding.unsqueeze(1)).sum(-1)
-        blind_scores = blind_scores_unnorm / self.temperature
+        blind_scores_unnorm = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
+        blind_scores = blind_scores_unnorm
         
         return {
             "rationale_scores": rationale_scores,
@@ -89,5 +89,5 @@ class CACRSPVCRModel(nn.Module):
 
     def forward_blind(self, ctx_text_embs, rationale_embeddings):
         blind_embedding = self.blind_projection(ctx_text_embs)
-        scores = (rationale_embeddings * blind_embedding.unsqueeze(1)).sum(-1)
-        return scores / self.temperature
+        scores = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
+        return scores

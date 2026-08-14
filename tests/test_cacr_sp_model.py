@@ -106,24 +106,44 @@ def test_cacr_sp_gradient_flow():
     
     image_embs = model.encode_images(images)
     
-    # Answer loss
+    # Forward pass
+    result = model.forward_rationale(images, questions, selected_answers, rationale_choices, image_embs=image_embs)
+    
+    # 1. Guarantee SP penalty > 0 by artificially boosting the correct label's blind score
+    # This ensures p_correct > 0.25 (since e^5 dominates)
+    boost = torch.zeros_like(result['blind_scores'])
+    boost.scatter_(1, rat_labels.unsqueeze(1), 5.0)
+    blind_scores = result['blind_scores'] + boost
+    
+    sp = ShortcutPenalty(margin=0.25, formulation='confidence_penalty')
+    sp_loss = sp(blind_scores, rat_labels)
+    
+    assert sp_loss.item() > 0, "SP loss is zero despite boosting"
+    
+    # 2. Verify SP gradients isolate to blind_projection (and do NOT reach rationale_projection)
+    model.zero_grad()
+    sp_loss.backward(retain_graph=True)
+    
+    blind_has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 
+                         for p in model.blind_projection.parameters() if p.requires_grad)
+    assert blind_has_grad, "No gradients in blind_projection from SP loss"
+    
+    rat_has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 
+                       for p in model.rationale_projection.parameters() if p.requires_grad)
+    assert not rat_has_grad, "SP loss leaked gradients into rationale_projection!"
+    
+    # 3. Verify total loss propagates gradients to everything intended
+    model.zero_grad()
+    
     ans_logits = model.forward_answer(images, questions, answer_choices, image_embs=image_embs)
     ans_loss = nn.CrossEntropyLoss()(ans_logits, ans_labels)
     
-    # Rationale loss
-    result = model.forward_rationale(images, questions, selected_answers, rationale_choices, image_embs=image_embs)
     contrastive_loss = ContrastiveLoss(loss_type='infonce', temperature=0.07)
     contr_loss = contrastive_loss(result['rationale_scores'], rat_labels)
     
-    # Shortcut penalty
-    sp = ShortcutPenalty(margin=0.25, formulation='confidence_penalty')
-    sp_loss = sp(result['blind_scores'], rat_labels)
-    
-    # Total loss
     total_loss = ans_loss + contr_loss + 0.1 * sp_loss
     total_loss.backward()
     
-    # Check gradients exist for all trainable components
     components = {
         'answer_scorer': model.answer_scorer,
         'context_projection': model.context_projection,
@@ -134,7 +154,7 @@ def test_cacr_sp_gradient_flow():
     for name, component in components.items():
         has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 
                        for p in component.parameters() if p.requires_grad)
-        assert has_grad, f"No gradients in {name}"
+        assert has_grad, f"No gradients in {name} after total loss backward"
         print(f"  ✓ Gradients flow to {name}")
     
     print("✓ All gradient flows correct")
