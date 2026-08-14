@@ -58,7 +58,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, args, epoch
         for i, label_idx in enumerate(ans_labels):
             gt_answers.append(answer_choices[i][label_idx.item()])
             
-        rat_logits = model.forward_rationale(images, questions, gt_answers, rationale_choices, image_embs=image_embs)
+        with torch.random.fork_rng(devices=[device] if device.type == 'cuda' else []):
+            rat_logits = model.forward_rationale(images, questions, gt_answers, rationale_choices, image_embs=image_embs)
         rat_loss = criterion(rat_logits, rat_labels)
         
         # --- Loss ---

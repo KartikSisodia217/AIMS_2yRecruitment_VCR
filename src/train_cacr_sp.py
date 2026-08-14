@@ -60,9 +60,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, contrastive_criteri
         for i, label_idx in enumerate(ans_labels):
             gt_answers.append(answer_choices[i][label_idx.item()])
             
-        result = model.forward_rationale(
-            images, questions, gt_answers, rationale_choices, image_embs=image_embs
-        )
+        with torch.random.fork_rng(devices=[device] if device.type == 'cuda' else []):
+            result = model.forward_rationale(
+                images, questions, gt_answers, rationale_choices, image_embs=image_embs
+            )
         rat_scores = result["rationale_scores"]
         rat_embs = result["rationale_embs"]
         ctx_text_embs = result["context_text_embs"]
