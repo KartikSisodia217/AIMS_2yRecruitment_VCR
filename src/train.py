@@ -11,17 +11,25 @@ from src.model import BaselineVCRModel
 from src.utils import set_seed, vcr_collate_fn, load_image
 from src.evaluate import evaluate_model
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, args):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, args, epoch, best_val_acc, total_batches, start_batch_idx=0, metrics_state=None):
     model.train()
     
-    total_loss = 0.0
-    total_ans_loss = 0.0
-    total_rat_loss = 0.0
-    
-    correct_a = 0
-    correct_r = 0
-    correct_ar = 0
-    total_samples = 0
+    if metrics_state:
+        total_loss = metrics_state.get("total_loss", 0.0)
+        total_ans_loss = metrics_state.get("total_ans_loss", 0.0)
+        total_rat_loss = metrics_state.get("total_rat_loss", 0.0)
+        correct_a = metrics_state.get("correct_a", 0)
+        correct_r = metrics_state.get("correct_r", 0)
+        correct_ar = metrics_state.get("correct_ar", 0)
+        total_samples = metrics_state.get("total_samples", 0)
+    else:
+        total_loss = 0.0
+        total_ans_loss = 0.0
+        total_rat_loss = 0.0
+        correct_a = 0
+        correct_r = 0
+        correct_ar = 0
+        total_samples = 0
     
     start_time = time.time()
     
@@ -76,17 +84,45 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, args):
         correct_ar += (match_a & match_r).sum().item()
         total_samples += len(ans_labels)
         
-        if batch_idx % args.log_interval == 0:
-            print(f"Batch [{batch_idx}/{len(dataloader)}] - Loss: {loss.item():.4f}")
+        actual_batch_idx = start_batch_idx + batch_idx
+        
+        if actual_batch_idx % args.log_interval == 0:
+            print(f"Batch [{actual_batch_idx}/{total_batches}] - Loss: {loss.item():.4f}")
+            
+        if actual_batch_idx > 0 and (actual_batch_idx + 1) % args.checkpoint_every == 0:
+            temp_path = os.path.join(args.checkpoint_dir, "latest_checkpoint.pt.tmp")
+            final_path = os.path.join(args.checkpoint_dir, "latest_checkpoint.pt")
+            
+            global_step = (epoch - 1) * total_batches + actual_batch_idx + 1
+            print(f"Checkpoint saved:\nepoch={epoch}\nbatch={actual_batch_idx + 1}/{total_batches}\nglobal_step={global_step}\npath={final_path}")
+            
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "epoch": epoch,
+                "batch_idx": actual_batch_idx,
+                "best_val_acc": best_val_acc,
+                "metrics_state": {
+                    "total_loss": total_loss,
+                    "total_ans_loss": total_ans_loss,
+                    "total_rat_loss": total_rat_loss,
+                    "correct_a": correct_a,
+                    "correct_r": correct_r,
+                    "correct_ar": correct_ar,
+                    "total_samples": total_samples
+                },
+                "torch_rng_state": torch.get_rng_state()
+            }, temp_path)
+            os.replace(temp_path, final_path)
             
     epoch_time = time.time() - start_time
     metrics = {
-        "loss": total_loss / len(dataloader),
-        "ans_loss": total_ans_loss / len(dataloader),
-        "rat_loss": total_rat_loss / len(dataloader),
-        "acc_a": correct_a / total_samples,
-        "acc_r": correct_r / total_samples,
-        "acc_ar": correct_ar / total_samples,
+        "loss": total_loss / total_batches if total_batches > 0 else 0,
+        "ans_loss": total_ans_loss / total_batches if total_batches > 0 else 0,
+        "rat_loss": total_rat_loss / total_batches if total_batches > 0 else 0,
+        "acc_a": correct_a / total_samples if total_samples > 0 else 0,
+        "acc_r": correct_r / total_samples if total_samples > 0 else 0,
+        "acc_ar": correct_ar / total_samples if total_samples > 0 else 0,
         "time": epoch_time
     }
     return metrics
@@ -106,6 +142,7 @@ def main():
     parser.add_argument("--device", type=str, default="auto", help="cuda or cpu")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Save directory")
+    parser.add_argument("--checkpoint_every", type=int, default=1000, help="Save mid-epoch checkpoint every N batches")
     parser.add_argument("--max_train_samples", type=int, default=-1, help="Subset for tiny overfit test")
     parser.add_argument("--max_val_samples", type=int, default=-1, help="Subset for validation")
     parser.add_argument("--log_interval", type=int, default=10, help="Log every N batches")
@@ -137,14 +174,6 @@ def main():
         val_dataset = Subset(val_dataset, indices)
         print(f"Subsampled val set to {len(val_dataset)} samples.")
         
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        num_workers=args.num_workers,
-        collate_fn=vcr_collate_fn
-    )
-    
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size, 
@@ -166,9 +195,15 @@ def main():
     criterion = nn.CrossEntropyLoss()
     
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+    if not os.access(args.checkpoint_dir, os.W_OK):
+        raise ValueError(f"Checkpoint directory {args.checkpoint_dir} is not writable.")
     
     start_epoch = 1
     best_val_acc = -1.0
+    resume_batch_idx = 0
+    metrics_state = None
+    
+    total_train_batches = (len(train_dataset) + args.batch_size - 1) // args.batch_size
     
     if args.resume:
         print(f"Loading checkpoint from {args.resume}...")
@@ -181,20 +216,58 @@ def main():
             model.rationale_scorer.load_state_dict(checkpoint["rationale_scorer"])
             
         optimizer.load_state_dict(checkpoint["optimizer"])
-        start_epoch = checkpoint["epoch"] + 1
+        
+        start_epoch = checkpoint.get("epoch", 1)
+        resume_batch_idx = checkpoint.get("batch_idx", -1) + 1
+        
+        if resume_batch_idx >= total_train_batches:
+            start_epoch += 1
+            resume_batch_idx = 0
+        else:
+            metrics_state = checkpoint.get("metrics_state", None)
+            if "torch_rng_state" in checkpoint:
+                torch.set_rng_state(checkpoint["torch_rng_state"])
         
         if "best_val_acc" in checkpoint:
             best_val_acc = checkpoint["best_val_acc"]
         elif "val_metrics" in checkpoint and "acc_ar" in checkpoint["val_metrics"]:
             best_val_acc = checkpoint["val_metrics"]["acc_ar"]
             
-        print(f"Resuming from epoch {start_epoch}")
+        print(f"Resuming epoch {start_epoch}")
+        if resume_batch_idx > 0:
+            print(f"Resuming from batch {resume_batch_idx + 1}/{total_train_batches}")
         print(f"Best Val Q->AR so far: {best_val_acc:.4f}")
         
     for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
         
-        train_metrics = train_one_epoch(model, train_loader, optimizer, criterion, device, args)
+        g = torch.Generator()
+        g.manual_seed(args.seed + epoch)
+        indices = torch.randperm(len(train_dataset), generator=g).tolist()
+        
+        current_start_batch_idx = 0
+        if epoch == start_epoch and resume_batch_idx > 0:
+            current_start_batch_idx = resume_batch_idx
+            start_sample_idx = resume_batch_idx * args.batch_size
+            indices = indices[start_sample_idx:]
+            
+        epoch_dataset = Subset(train_dataset, indices)
+        train_loader = DataLoader(
+            epoch_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=vcr_collate_fn
+        )
+        
+        train_metrics = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, args,
+            epoch=epoch, best_val_acc=best_val_acc, total_batches=total_train_batches,
+            start_batch_idx=current_start_batch_idx, metrics_state=metrics_state
+        )
+        
+        # Reset metrics_state after first epoch of resuming
+        metrics_state = None
         
         print(f"Train Loss: {train_metrics['loss']:.4f}")
         print(f"Train Q->A Acc:  {train_metrics['acc_a']:.4f}")
@@ -225,15 +298,19 @@ def main():
             torch.save(state_dict, save_path)
             print(f"Saved best model with Val Q->AR: {best_val_acc:.4f} to {save_path}")
 
+        temp_latest_path = os.path.join(args.checkpoint_dir, "latest_checkpoint.pt.tmp")
         latest_save_path = os.path.join(args.checkpoint_dir, "latest_checkpoint.pt")
         latest_state_dict = {
             "model_state_dict": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
+            "batch_idx": total_train_batches - 1,
             "best_val_acc": best_val_acc,
-            "val_metrics": val_metrics
+            "val_metrics": val_metrics,
+            "torch_rng_state": torch.get_rng_state()
         }
-        torch.save(latest_state_dict, latest_save_path)
+        torch.save(latest_state_dict, temp_latest_path)
+        os.replace(temp_latest_path, latest_save_path)
         print(f"Saved latest checkpoint: {latest_save_path}")
 
 if __name__ == "__main__":
