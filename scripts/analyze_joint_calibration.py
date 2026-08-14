@@ -14,7 +14,7 @@ Usage:
     python scripts/analyze_joint_calibration.py \
         --checkpoint checkpoints/cacr_sp/best_model.pt \
         --data_dir data/vcr \
-        --zip_path data/vcr/vcr1images.zip \
+        --image_dir /path/to/vcr1images_clean \
         --max_val_samples 512 \
         --batch_size 4
 """
@@ -35,7 +35,7 @@ from src.cacr_sp_model import CACRSPVCRModel
 from src.utils import set_seed, vcr_collate_fn, load_image
 
 
-def collect_scores(model, dataloader, device, zip_path):
+def collect_scores(model, dataloader, device):
     """Run one evaluation pass collecting raw scores for all samples."""
     model.eval()
     
@@ -46,7 +46,7 @@ def collect_scores(model, dataloader, device, zip_path):
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(dataloader):
-            images = [load_image(p, zip_path) for p in batch["image_path"]]
+            images = [load_image(p) for p in batch["image_path"]]
             questions = batch["question"]
             answer_choices = batch["answer_choices"]
             ans_labels = batch["answer_label"].to(device)
@@ -220,7 +220,7 @@ def main():
     parser = argparse.ArgumentParser(description="Joint CACR Calibration Analysis (CUDA only)")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/cacr_sp/best_model.pt")
     parser.add_argument("--data_dir", type=str, default="data/vcr")
-    parser.add_argument("--zip_path", type=str, default="data/vcr/vcr1images.zip")
+    parser.add_argument("--image_dir", type=str, default=None, help="Directory containing extracted images (e.g. vcr1images_clean)")
     parser.add_argument("--max_val_samples", type=int, default=512)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.07)
@@ -241,7 +241,7 @@ def main():
     
     # Load validation data
     print("\nLoading validation dataset...")
-    val_dataset = VCRDataset(split="val", data_dir=args.data_dir)
+    val_dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
     if args.max_val_samples > 0:
         indices = list(range(min(args.max_val_samples, len(val_dataset))))
         val_dataset = Subset(val_dataset, indices)
@@ -282,7 +282,7 @@ def main():
     print("PHASE 1: Collecting raw scores")
     print("="*60)
     
-    data = collect_scores(model, val_loader, device, args.zip_path)
+    data = collect_scores(model, val_loader, device)
     
     ans_logits = data["ans_logits"]      # [N, 4]
     rat_scores = data["rat_scores"]      # [N, 4, 4]
