@@ -227,7 +227,12 @@ def main():
         else:
             metrics_state = checkpoint.get("metrics_state", None)
             if "torch_rng_state" in checkpoint:
-                torch.set_rng_state(checkpoint["torch_rng_state"])
+                rng_state = checkpoint["torch_rng_state"]
+                if isinstance(rng_state, torch.Tensor):
+                    rng_state = rng_state.cpu()
+                    if rng_state.dtype != torch.uint8:
+                        rng_state = rng_state.type(torch.ByteTensor)
+                torch.set_rng_state(rng_state)
         
         if "best_val_acc" in checkpoint:
             best_val_acc = checkpoint["best_val_acc"]
