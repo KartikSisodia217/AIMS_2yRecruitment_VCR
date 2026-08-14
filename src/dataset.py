@@ -31,17 +31,18 @@ def clean_path(path):
     return re.sub(r'\[(.*?)\]\(mailto:.*?\)', r'\1', path)
 
 class VCRDataset(Dataset):
-    def __init__(self, split='train', data_dir='data/vcr'):
+    def __init__(self, split='train', data_dir='data/vcr', image_dir=None):
         """
         Initializes the VCRDataset.
         :param split: 'train', 'val', or 'test'
         :param data_dir: Root directory of the VCR data
+        :param image_dir: Optional alternative directory for images
         """
         super().__init__()
         self.data_dir = Path(data_dir)
         self.split = split
         self.jsonl_path = self.data_dir / 'vcr1annots' / f'{split}.jsonl'
-        self.image_dir = self.data_dir / 'vcr1images'
+        self.image_dir = Path(image_dir) if image_dir is not None else self.data_dir / 'vcr1images'
         
         if not self.jsonl_path.exists():
             raise FileNotFoundError(f"Annotation file not found: {self.jsonl_path}")
