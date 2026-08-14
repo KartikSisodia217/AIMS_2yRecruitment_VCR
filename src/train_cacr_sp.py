@@ -61,21 +61,34 @@ def train_one_epoch(model, dataloader, optimizer, criterion, contrastive_criteri
             gt_answers.append(answer_choices[i][label_idx.item()])
             
         with torch.random.fork_rng(devices=[device] if device.type == 'cuda' else []):
-            result = model.forward_rationale(
-                images, questions, gt_answers, rationale_choices, image_embs=image_embs
+            result = model.forward_joint_rationale(
+                images, questions, answer_choices, rationale_choices, image_embs=image_embs
             )
-        rat_scores = result["rationale_scores"]
-        rat_embs = result["rationale_embs"]
-        ctx_text_embs = result["context_text_embs"]
-        rat_loss = contrastive_criterion(rat_scores, rat_labels)
+            
+        # Extract teacher-forced rationale scores for SP and logging
+        # We need the scores where answer == ans_label
+        joint_rat_scores = result["joint_rationale_scores"] # [B, 4, 4]
+        B = len(ans_labels)
+        rat_scores_tf = joint_rat_scores[torch.arange(B), ans_labels, :] # [B, 4]
+        
+        rat_loss = contrastive_criterion(rat_scores_tf, rat_labels)
+        
+        # 16-way Joint Loss
+        # joint_scores[b, a, r] = ans_logits[b, a] + (joint_rat_scores[b, a, r] / args.temperature)
+        scaled_joint_rat_scores = joint_rat_scores / args.temperature
+        joint_scores = ans_logits.unsqueeze(2) + scaled_joint_rat_scores # [B, 4, 4]
+        joint_scores_flat = joint_scores.view(B, 16)
+        joint_labels = ans_labels * 4 + rat_labels
+        joint_loss = F.cross_entropy(joint_scores_flat, joint_labels)
         
         sp_loss = torch.tensor(0.0).to(device)
         if args.enable_sp:
-            blind_scores = result["blind_scores"]
-            sp_loss = sp_criterion(blind_scores, rat_labels)
+            joint_blind_scores = result["joint_blind_scores"]
+            blind_scores_tf = joint_blind_scores[torch.arange(B), ans_labels, :]
+            sp_loss = sp_criterion(blind_scores_tf, rat_labels)
             
             
-        loss = (args.ans_loss_weight * ans_loss) + rat_loss + (args.lambda_sp * sp_loss)
+        loss = (args.ans_loss_weight * ans_loss) + joint_loss + (args.lambda_sp * sp_loss)
         
         loss.backward()
         optimizer.step()
@@ -86,7 +99,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, contrastive_criteri
         total_sp_loss += sp_loss.item()
         
         ans_preds = ans_logits.argmax(dim=-1)
-        rat_preds = rat_scores.argmax(dim=-1)
+        rat_preds = rat_scores_tf.argmax(dim=-1)
         
         match_a = (ans_preds == ans_labels)
         match_r = (rat_preds == rat_labels)

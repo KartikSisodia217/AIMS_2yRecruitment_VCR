@@ -95,3 +95,56 @@ class CACRSPVCRModel(nn.Module):
         blind_embedding = F.normalize(blind_embedding, p=2, dim=-1)
         scores = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
         return scores
+
+    def forward_joint_rationale(self, images, questions, answer_choices, rationale_choices, image_embs=None):
+        B = len(questions)
+        if image_embs is None:
+            image_embs = self.encode_images(images)
+            
+        # Create context for all 4 answers
+        ctx_texts_flat = []
+        for q, a_list in zip(questions, answer_choices):
+            for a in a_list:
+                ctx_texts_flat.append(f"Question: {q} Answer: {a}")
+                
+        ctx_text_embs = self.vlm.encode_text(ctx_texts_flat) # [B*4, 768]
+        
+        # Expand image_embs from [B, 768] to [B*4, 768]
+        img_embs_expanded = image_embs.unsqueeze(1).expand(B, 4, -1).reshape(B * 4, -1)
+        
+        context_embedding_flat = self.compute_context(img_embs_expanded, ctx_text_embs)
+        context_embedding = context_embedding_flat.view(B, 4, -1) # [B, 4_ans, dim]
+        
+        rat_texts_flat = []
+        for r_list in rationale_choices:
+            for r in r_list:
+                rat_texts_flat.append(f"Rationale: {r}")
+                
+        rat_text_embs = self.vlm.encode_text(rat_texts_flat)
+        rationale_embeddings_flat = self.rationale_projection(rat_text_embs)
+        rationale_embeddings = rationale_embeddings_flat.view(B, 4, -1) # [B, 4_rat, dim]
+        rationale_embeddings = F.normalize(rationale_embeddings, p=2, dim=-1)
+        
+        # We want scores[b, a, r] = context_embedding[b, a] * rationale_embeddings[b, r]
+        # context_embedding: [B, 4, 1, dim]
+        # rationale_embeddings: [B, 1, 4, dim]
+        context_emb_expanded = context_embedding.unsqueeze(2) # [B, 4_ans, 1, dim]
+        rat_emb_expanded = rationale_embeddings.unsqueeze(1) # [B, 1, 4_rat, dim]
+        
+        joint_scores = (context_emb_expanded * rat_emb_expanded).sum(-1) # [B, 4_ans, 4_rat]
+        
+        # Blind branch
+        blind_embedding_flat = self.blind_projection(ctx_text_embs)
+        blind_embedding_flat = F.normalize(blind_embedding_flat, p=2, dim=-1)
+        blind_embedding = blind_embedding_flat.view(B, 4, -1) # [B, 4_ans, dim]
+        
+        blind_emb_expanded = blind_embedding.unsqueeze(2) # [B, 4_ans, 1, dim]
+        blind_scores = (rat_emb_expanded.detach() * blind_emb_expanded).sum(-1) # [B, 4_ans, 4_rat]
+        
+        return {
+            "joint_rationale_scores": joint_scores,
+            "joint_blind_scores": blind_scores,
+            "context_embs": context_embedding,
+            "rationale_embs": rationale_embeddings,
+            "ctx_text_embs": ctx_text_embs
+        }
