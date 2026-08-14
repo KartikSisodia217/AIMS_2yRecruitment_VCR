@@ -27,9 +27,9 @@ class CACRSPVCRModel(nn.Module):
             
         self.answer_scorer = BaselineScorer(dropout=scorer_dropout)
         
-        self.context_projection = ProjectionHead(2304, 1024, embedding_dim)
+        self.img_proj = ProjectionHead(768, 1024, embedding_dim)
+        self.txt_proj = ProjectionHead(768, 1024, embedding_dim)
         self.rationale_projection = ProjectionHead(768, 1024, embedding_dim)
-        self.blind_projection = ProjectionHead(768, 1024, embedding_dim)
         
         self.temperature = temperature
 
@@ -60,8 +60,7 @@ class CACRSPVCRModel(nn.Module):
         ctx_texts = [f"Question: {q} Answer: {selected_answers[i]}" for i, q in enumerate(questions)]
         ctx_text_embs = self.vlm.encode_text(ctx_texts)
         
-        h_context = torch.cat([image_embs, ctx_text_embs, image_embs * ctx_text_embs], dim=-1)
-        context_embedding = self.context_projection(h_context)
+        context_embedding = F.normalize(self.img_proj(image_embs) + self.txt_proj(ctx_text_embs), p=2, dim=-1)
         
         rat_texts_flat = []
         for r_list in rationale_choices:
@@ -75,9 +74,12 @@ class CACRSPVCRModel(nn.Module):
         scores = (rationale_embeddings * context_embedding.unsqueeze(1)).sum(-1)
         rationale_scores = scores
         
-        blind_embedding = self.blind_projection(ctx_text_embs)
-        blind_scores_unnorm = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
-        blind_scores = blind_scores_unnorm
+        # Compute blind scores by routing zeroed images through the main context projection
+        zero_image_embs = torch.zeros_like(image_embs)
+        blind_context_embedding = F.normalize(self.img_proj(zero_image_embs) + self.txt_proj(ctx_text_embs), p=2, dim=-1)
+        
+        # Do not detach rationale_embeddings so SP gradients flow into the rationale projection
+        blind_scores = (rationale_embeddings * blind_context_embedding.unsqueeze(1)).sum(-1)
         
         return {
             "rationale_scores": rationale_scores,
@@ -88,6 +90,10 @@ class CACRSPVCRModel(nn.Module):
         }
 
     def forward_blind(self, ctx_text_embs, rationale_embeddings):
-        blind_embedding = self.blind_projection(ctx_text_embs)
-        scores = (rationale_embeddings.detach() * blind_embedding.unsqueeze(1)).sum(-1)
+        B = ctx_text_embs.size(0)
+        # Dummy zero image embs for blind evaluation
+        zero_image_embs = torch.zeros(B, 768, device=ctx_text_embs.device, dtype=ctx_text_embs.dtype)
+        blind_context_embedding = F.normalize(self.img_proj(zero_image_embs) + self.txt_proj(ctx_text_embs), p=2, dim=-1)
+        
+        scores = (rationale_embeddings * blind_context_embedding.unsqueeze(1)).sum(-1)
         return scores
