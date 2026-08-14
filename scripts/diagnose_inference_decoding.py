@@ -24,9 +24,12 @@ class MLP(nn.Module):
 def diagnose_decoding(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"DEBUG: Received args.data_dir = {args.data_dir}")
+    print(f"DEBUG: Received args.image_dir = {args.image_dir}")
     
     val_dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
-    # Subset to max_val_samples
+    print(f"DEBUG: VCRDataset resolved jsonl_path to = {val_dataset.jsonl_path}")
+
     if args.max_val_samples > 0:
         indices = list(range(min(args.max_val_samples, len(val_dataset))))
         val_dataset = Subset(val_dataset, indices)
@@ -165,13 +168,18 @@ def diagnose_decoding(args):
         print(f"\nChanged Predictions: {changed_predictions} / {total} ({(changed_predictions/total)*100:.2f}%)")
     print("="*50)
 
+import sys
+
 if __name__ == "__main__":
+    print(f"DEBUG: sys.argv = {sys.argv}")
     parser = argparse.ArgumentParser(description="Diagnose CACR-SP inference decoding")
-    parser.add_argument("--data_dir", type=str, default="data/vcr", help="VCR data directory")
-    parser.add_argument("--image_dir", type=str, default=None, help="Root directory containing images")
+    parser.add_argument("--data_dir", type=str, required=True, help="VCR data directory")
+    parser.add_argument("--image_dir", type=str, required=True, help="Root directory containing images")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/cacr_sp/latest_checkpoint.pt", help="Path to checkpoint")
     parser.add_argument("--max_val_samples", type=int, default=512, help="Max validation samples")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     
     args = parser.parse_args()
+    print(f"DEBUG: Parsed args = {args}")
     diagnose_decoding(args)
+
