@@ -89,7 +89,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, contrastive_criteri
             sp_loss = sp_criterion(blind_scores_tf, rat_labels)
             
             
-        loss = (args.ans_loss_weight * ans_loss) + rat_loss + joint_loss + (args.lambda_sp * sp_loss)
+        loss = (args.ans_loss_weight * ans_loss) + joint_loss + (args.lambda_sp * sp_loss)
         
         loss.backward()
         optimizer.step()

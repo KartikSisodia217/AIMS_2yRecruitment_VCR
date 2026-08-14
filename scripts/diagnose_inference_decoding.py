@@ -173,8 +173,8 @@ import sys
 if __name__ == "__main__":
     print(f"DEBUG: sys.argv = {sys.argv}")
     parser = argparse.ArgumentParser(description="Diagnose CACR-SP inference decoding")
-    parser.add_argument("--data_dir", type=str, required=True, help="VCR data directory")
-    parser.add_argument("--image_dir", type=str, required=True, help="Root directory containing images")
+    parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/kartiksisodia217/aims-vcr-recruitment-dataset", help="VCR data directory")
+    parser.add_argument("--image_dir", type=str, default="/kaggle/input/datasets/kartiksisodia217/aims-vcr-recruitment-dataset/vcr1images_clean", help="Root directory containing images")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/cacr_sp/latest_checkpoint.pt", help="Path to checkpoint")
     parser.add_argument("--max_val_samples", type=int, default=512, help="Max validation samples")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
