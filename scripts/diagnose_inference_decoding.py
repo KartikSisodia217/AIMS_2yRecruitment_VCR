@@ -1,4 +1,5 @@
 import os
+import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,22 +21,19 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
-def diagnose_decoding():
+def diagnose_decoding(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    zip_path = "data/vcr/vcr1images.zip"
-    data_dir = "data/vcr"
-    
-    val_dataset = VCRDataset(split="val", data_dir=data_dir)
-    # Subset to 512 samples
-    max_val_samples = 512
-    indices = list(range(min(max_val_samples, len(val_dataset))))
-    val_dataset = Subset(val_dataset, indices)
+    val_dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
+    # Subset to max_val_samples
+    if args.max_val_samples > 0:
+        indices = list(range(min(args.max_val_samples, len(val_dataset))))
+        val_dataset = Subset(val_dataset, indices)
     
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=4, 
+        batch_size=args.batch_size, 
         shuffle=False, 
         num_workers=0,
         collate_fn=vcr_collate_fn
@@ -45,8 +43,8 @@ def diagnose_decoding():
     vlm = SigLIP2Wrapper(model_name="google/siglip2-base-patch16-224", device=device.type)
     model = CACRSPVCRModel(vlm=vlm, scorer_dropout=0.1, embedding_dim=512, temperature=0.07)
     
-    ckpt_path = "checkpoints/cacr_sp/latest_checkpoint.pt"
-    if not os.path.exists(ckpt_path):
+    ckpt_path = args.checkpoint
+    if not os.path.exists(ckpt_path) and ckpt_path == "checkpoints/cacr_sp/latest_checkpoint.pt":
         ckpt_path = "checkpoints/cacr_sp/best_model.pt"
     
     print(f"Loading checkpoint from {ckpt_path}...")
@@ -85,6 +83,11 @@ def diagnose_decoding():
     correct_ans_joint_B = 0
     
     changed_predictions = 0
+    
+    # Use image_dir for loading if provided, otherwise assume zip inside data_dir
+    zip_path = os.path.join(args.data_dir, "vcr1images.zip")
+    if args.image_dir is not None:
+        zip_path = args.image_dir
     
     print("Running inference...")
     with torch.no_grad():
@@ -148,18 +151,27 @@ def diagnose_decoding():
     print("RESULTS COMPARISON")
     print("="*50)
     print(f"Total Samples: {total}")
-    print(f"QA->R TF:   {correct_r_tf / total * 100:.2f}%")
-    print(f"QA->R Pred: {correct_r_pred / total * 100:.2f}%")
-    print("\nFORMULATION A (Raw Addition - Current)")
-    print(f"Q->AR:               {correct_ar_A / total * 100:.2f}%")
-    print(f"Joint-decoded Q->A:  {correct_ans_joint_A / total * 100:.2f}%")
-    
-    print("\nFORMULATION B (Hierarchical Log-Softmax)")
-    print(f"Q->AR:               {correct_ar_B / total * 100:.2f}%")
-    print(f"Joint-decoded Q->A:  {correct_ans_joint_B / total * 100:.2f}%")
-    
-    print(f"\nChanged Predictions: {changed_predictions} / {total} ({(changed_predictions/total)*100:.2f}%)")
+    if total > 0:
+        print(f"QA->R TF:   {correct_r_tf / total * 100:.2f}%")
+        print(f"QA->R Pred: {correct_r_pred / total * 100:.2f}%")
+        print("\nFORMULATION A (Raw Addition - Current)")
+        print(f"Q->AR:               {correct_ar_A / total * 100:.2f}%")
+        print(f"Joint-decoded Q->A:  {correct_ans_joint_A / total * 100:.2f}%")
+        
+        print("\nFORMULATION B (Hierarchical Log-Softmax)")
+        print(f"Q->AR:               {correct_ar_B / total * 100:.2f}%")
+        print(f"Joint-decoded Q->A:  {correct_ans_joint_B / total * 100:.2f}%")
+        
+        print(f"\nChanged Predictions: {changed_predictions} / {total} ({(changed_predictions/total)*100:.2f}%)")
     print("="*50)
 
 if __name__ == "__main__":
-    diagnose_decoding()
+    parser = argparse.ArgumentParser(description="Diagnose CACR-SP inference decoding")
+    parser.add_argument("--data_dir", type=str, default="data/vcr", help="VCR data directory")
+    parser.add_argument("--image_dir", type=str, default=None, help="Root directory containing images")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/cacr_sp/latest_checkpoint.pt", help="Path to checkpoint")
+    parser.add_argument("--max_val_samples", type=int, default=512, help="Max validation samples")
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
+    
+    args = parser.parse_args()
+    diagnose_decoding(args)
