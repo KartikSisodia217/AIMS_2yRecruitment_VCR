@@ -143,10 +143,15 @@ def diagnose(model, dataloader, device, zip_path):
     print("See if TF Correct, Pred Wrong == TF Wrong, Pred Correct.")
     
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_dir", type=str, default="data/vcr")
+    parser.add_argument("--image_dir", type=str, default="data/vcr/vcr1images")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    dataset = VCRDataset(split="val", data_dir="data/vcr", image_dir="data/vcr/vcr1images")
+    dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
     indices = list(range(1000))
     dataset = Subset(dataset, indices)
     
