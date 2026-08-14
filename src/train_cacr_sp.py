@@ -57,13 +57,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, contrastive_criteri
         ans_loss = criterion(ans_logits, ans_labels)
         
         gt_answers = []
-        ans_preds_for_corruption = ans_logits.argmax(dim=-1)
-        import random
         for i, label_idx in enumerate(ans_labels):
-            if random.random() < 0.5:
-                gt_answers.append(answer_choices[i][ans_preds_for_corruption[i].item()])
-            else:
-                gt_answers.append(answer_choices[i][label_idx.item()])
+            gt_answers.append(answer_choices[i][label_idx.item()])
             
         result = model.forward_rationale(
             images, questions, gt_answers, rationale_choices, image_embs=image_embs
