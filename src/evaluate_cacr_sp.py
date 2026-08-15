@@ -93,3 +93,68 @@ def evaluate_cacr_sp(model, dataloader, device, zip_path="data/vcr/vcr1images.zi
     }
     
     return metrics
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    from torch.utils.data import DataLoader, Subset
+    from src.dataset import VCRDataset
+    from src.vlm import SigLIP2Wrapper
+    from src.cacr_sp_model import CACRSPVCRModel
+    from src.utils import vcr_collate_fn
+
+    parser = argparse.ArgumentParser(description="Evaluate CACR-SP Model")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint")
+    parser.add_argument("--data_dir", type=str, default="data/vcr", help="VCR data directory")
+    parser.add_argument("--image_dir", type=str, default=None, help="Root directory containing vcr1images / movie folders.")
+    parser.add_argument("--max_val_samples", type=int, default=None, help="Subset for validation")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
+    parser.add_argument("--device", type=str, default="auto", help="cuda or cpu")
+    
+    args = parser.parse_args()
+
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+
+    print(f"Using device: {device}")
+
+    print("Initializing model...")
+    vlm = SigLIP2Wrapper(model_name="google/siglip2-base-patch16-224", device=device.type)
+    model = CACRSPVCRModel(vlm=vlm, scorer_dropout=0.1, embedding_dim=512, temperature=0.07)
+    model.to(device)
+
+    print(f"Loading checkpoint from {args.checkpoint}...")
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint)
+        
+    print("Loading validation dataset...")
+    val_dataset = VCRDataset(split="val", data_dir=args.data_dir, image_dir=args.image_dir)
+    
+    if args.max_val_samples is not None and args.max_val_samples > 0:
+        indices = list(range(min(args.max_val_samples, len(val_dataset))))
+        val_dataset = Subset(val_dataset, indices)
+        print(f"Subsampled val set to {len(val_dataset)} samples.")
+        
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=vcr_collate_fn,
+        num_workers=0
+    )
+
+    zip_path = os.path.join(args.data_dir, "vcr1images.zip")
+
+    print("Evaluating...")
+    metrics = evaluate_cacr_sp(model, val_dataloader, device, zip_path=zip_path)
+
+    print(f"Val Q->A Acc: {metrics['acc_a']:.4f}")
+    print(f"Val QA->R (TF): {metrics['acc_r_tf']:.4f}")
+    print(f"Val QA->R (Pred): {metrics['acc_r_pred']:.4f}")
+    print(f"Val Q->AR Acc: {metrics['acc_ar']:.4f}")
+    print(f"Val Blind Acc: {metrics['acc_blind']:.4f}")
